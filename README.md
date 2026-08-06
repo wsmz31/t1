@@ -8,23 +8,16 @@ news publishers inside a date window, and writes:
 
 Default window: **16 Jul 2026 – 2 Aug 2026** (Malaysia time, UTC+8).
 
+**No YouTube API key required.** Discovery uses yt-dlp channel search; exact
+publish dates come from each video’s watch page (calendar dates, not
+“5 days ago”).
+
 ## Setup
 
 ```bash
 pip install -r requirements.txt
-export YOUTUBE_API_KEY="AIza..."   # YouTube Data API v3 key
-python v1_youtube_scraper_cursor.py
+python3 v1_youtube_scraper_cursor.py
 ```
-
-Get a free key: [Google Cloud Console](https://console.cloud.google.com) →
-new project → APIs & Services → Library → enable **YouTube Data API v3** →
-Credentials → Create credentials → API key.
-
-## Quota
-
-Default allowance is 10,000 units/day. `search.list` costs 100 units per call.
-With 11 channels × 6 keywords ≈ 6,600 units — fits once per day. Trim
-`KEYWORDS` in the script if you hit the cap.
 
 ## Publishers
 
