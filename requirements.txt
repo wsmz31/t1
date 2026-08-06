@@ -1,0 +1,4 @@
+# Standard library only for the scraper itself.
+# Optional: for further analysis of the CSV outputs.
+pandas>=2.0.0
+openpyxl>=3.1.0
