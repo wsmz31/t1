@@ -209,7 +209,18 @@ def list_channel(channel_id: str) -> dict:
 
 def fetch(video_id: str) -> dict | None:
     """yt-dlp watch extract. Returns None when bot-blocked / failed."""
-    with YoutubeDL(_opts(skip_download=True)) as ydl:
+    # Swallow yt-dlp's noisy "Sign in to confirm you're not a bot" lines;
+    # the HTML fallback handles those hosts.
+    opts = _opts(skip_download=True)
+    opts["quiet"] = True
+    opts["no_warnings"] = True
+    opts["logger"] = type("L", (), {
+        "debug": staticmethod(lambda *a, **k: None),
+        "info": staticmethod(lambda *a, **k: None),
+        "warning": staticmethod(lambda *a, **k: None),
+        "error": staticmethod(lambda *a, **k: None),
+    })()
+    with YoutubeDL(opts) as ydl:
         try:
             info = ydl.extract_info(
                 f"https://www.youtube.com/watch?v={video_id}", download=False
