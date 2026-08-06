@@ -323,10 +323,15 @@ def _extract_lockups(obj):
                 ).get("videoId")
                 if vid and vid not in seen_ids:
                     access = slv.get("accessibilityText") or ""
-                    # "TITLE, 435 views - play Short"
+                    # "TITLE, 435 views - play Short" / "TITLE, 3.2 thousand views - play Short"
                     title = access
                     views = 0
-                    m = re.match(r"^(.*?),\s*([\d.,]+[KMB]?\s+views?)\s*-", access, re.I)
+                    m = re.match(
+                        r"^(.*),\s*([\d.,]+\s*(?:[kmb]|thousand|million)?\s*views?)"
+                        r"(?:\s*-\s*play short)?\s*$",
+                        access,
+                        re.I,
+                    )
                     if m:
                         title = m.group(1).strip()
                         views = parse_views(m.group(2))
