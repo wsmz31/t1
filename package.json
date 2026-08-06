@@ -1,0 +1,21 @@
+{
+  "name": "t1",
+  "private": true,
+  "version": "1.0.0",
+  "description": "A small full-stack task board app used to demonstrate the Cloud Agent development environment.",
+  "workspaces": [
+    "server",
+    "client"
+  ],
+  "scripts": {
+    "dev": "concurrently -n server,client -c blue,magenta \"npm:dev:server\" \"npm:dev:client\"",
+    "dev:server": "npm run dev -w server",
+    "dev:client": "npm run dev -w client",
+    "build": "npm run build -w client",
+    "start": "npm run start -w server",
+    "lint": "npm run lint -w client"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2"
+  }
+}

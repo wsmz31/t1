@@ -1,0 +1,8 @@
+node_modules/
+dist/
+*.log
+*.tsbuildinfo
+.DS_Store
+
+# Local runtime data for the task store
+server/data/tasks.json
