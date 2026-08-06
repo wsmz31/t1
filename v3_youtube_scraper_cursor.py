@@ -108,9 +108,12 @@ RELEVANCE = re.compile(
     r"\bnegri\b|negeri ?sembilan|negrisembilan|\bn9\b|n\.\s*sembilan|"
     r"\bn sembilan\b|prn\s*n|prnns|prnn9|state polls|state election|"
     r"pilihan ?raya ?negeri|"
-    # N9 seat and district names, unique to this state, so they are safe
+    # N9 seat and district names. Bare "nilai"/"labu" are also common Malay
+    # words, so only match them in seat/election context (DUN Labu, N.10 Nilai).
     r"seremban|chennah|rantau|linggi|paroi|sikamat|ampangan|jelebu|rembau|"
-    r"juasseh|repah|temiang|lukut|chuah|pertang|klawang|gemas|labu|nilai|"
+    r"juasseh|repah|temiang|lukut|chuah|pertang|klawang|gemas|"
+    r"(?:dun|n\.\s*\d+|kerusi|calon|pengundi)\s+(?:labu|nilai)|"
+    r"(?:labu|nilai)\s+(?:dun|kerusi|calon)|"
     r"森美兰|森州",
     re.IGNORECASE,
 )
