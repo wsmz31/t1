@@ -1,0 +1,26 @@
+{
+  "name": "t1 full-stack dev",
+  "install": "npm install",
+  "terminals": [
+    {
+      "name": "server",
+      "command": "npm run dev:server",
+      "description": "Express task API with hot reload on http://localhost:3001"
+    },
+    {
+      "name": "client",
+      "command": "npm run dev:client",
+      "description": "Vite + React dev server on http://localhost:5173 (proxies /api to the server)"
+    }
+  ],
+  "ports": [
+    {
+      "name": "API",
+      "port": 3001
+    },
+    {
+      "name": "Web",
+      "port": 5173
+    }
+  ]
+}
