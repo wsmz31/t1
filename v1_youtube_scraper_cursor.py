@@ -152,10 +152,16 @@ def parse_duration_text(text) -> int:
 
 
 def parse_publish_date(text: str):
-    """Parse 'Aug 1, 2026' / '1 Aug 2026' style dates from watch pages."""
+    """Parse 'Aug 1, 2026' / 'Premiered Jul 27, 2026' style watch-page dates."""
     if not text:
         return None
     text = text.strip()
+    text = re.sub(
+        r"^(premiered|streamed|published|joined|started streaming)\s+",
+        "",
+        text,
+        flags=re.IGNORECASE,
+    ).strip()
     for fmt in ("%b %d, %Y", "%B %d, %Y", "%d %b %Y", "%d %B %Y", "%Y-%m-%d"):
         try:
             return datetime.strptime(text, fmt).replace(
