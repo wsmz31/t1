@@ -8,15 +8,15 @@ news publishers inside a date window, and writes:
 
 Default window: **16 Jul 2026 – 2 Aug 2026** (Malaysia time, UTC+8).
 
-**No YouTube API key required.** Discovery uses yt-dlp channel search; exact
-publish dates come from each video’s watch page (calendar dates, not
-“5 days ago”).
+**No YouTube API key required.** The script browses each channel’s Videos and
+Shorts tabs (newest first), stops once listings are older than the window,
+then reads exact calendar publish dates from watch pages.
 
 ## Setup
 
 ```bash
-pip install -r requirements.txt
-python3 v1_youtube_scraper_cursor.py
+pip install -r requirements.txt   # optional, for CSV analysis
+python3 -u v1_youtube_scraper_cursor.py
 ```
 
 ## Publishers
@@ -27,5 +27,5 @@ Sin Chew Daily, Nanyang / eNanyang, Buletin TV3 (Media Prima).
 
 ## Reuse
 
-For GE16, change `WINDOW_START`, `WINDOW_END`, and `KEYWORDS` in
+For GE16, change `WINDOW_START`, `WINDOW_END`, and `RELEVANCE` in
 `v1_youtube_scraper_cursor.py`. The channel list stays.

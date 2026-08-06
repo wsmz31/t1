@@ -10,19 +10,20 @@ Window default: 16 Jul 2026 to 2 Aug 2026 inclusive, Malaysia time (UTC+8).
 WHY THIS EXISTS
 Scraping YouTube listing pages alone gives relative dates ("5 days ago",
 "2 weeks ago"). "2 weeks ago" is a seven-day bucket, so any video near a
-window edge is unplaceable, and a single keyword search silently misses
-videos. This script discovers candidates via channel search (yt-dlp, no API
-key), then opens each watch page for an exact calendar publish date and
-exact view counts.
+window edge is unplaceable. This script browses each channel's Videos and
+Shorts tabs newest-first (no API key), stops once listings are clearly older
+than the window, then opens each relevant watch page for an exact calendar
+publish date and exact view counts.
 
 SETUP
 1.  pip install -r requirements.txt
-2.  python3 v1_youtube_scraper_cursor.py
+2.  python3 -u v1_youtube_scraper_cursor.py
 
 No Google Cloud / YouTube Data API key required.
 
 REUSE
-For GE16, change WINDOW_START, WINDOW_END and KEYWORDS. The channel list stays.
+For GE16, change WINDOW_START, WINDOW_END and KEYWORDS/RELEVANCE. The channel
+list stays.
 """
 
 import csv
@@ -31,14 +32,8 @@ import re
 import sys
 import time
 import urllib.error
-import urllib.parse
 import urllib.request
 from datetime import datetime, timezone, timedelta
-
-try:
-    import yt_dlp
-except ImportError:
-    sys.exit("Run: pip install -r requirements.txt")
 
 
 # ----------------------------------------------------------------------------
@@ -65,24 +60,12 @@ CHANNELS = {
 }
 # MyUndi has no YouTube channel. It is a web-only results portal.
 
-# Cast wide. Recall matters more than precision here, the date filter and the
-# relevance filter below do the tightening.
-KEYWORDS = [
-    "negeri sembilan",
-    "negri",
-    "PRN",
-    "PRNNS2026",
-    "pilihan raya",
-    "森美兰",        # Negeri Sembilan, Chinese
-    "州选",          # state election, Chinese
-]
-
 # A video is kept only if its title or description matches one of these.
 # Widen if you find the filter dropping real coverage.
 RELEVANCE = re.compile(
-    r"negeri sembilan|negri sembilan|\bn9\b|n\.sembilan|n sembilan|"
-    r"prn\s*n|prnns|prnn9|state polls|state election|pilihan raya negeri|"
-    r"森美兰|森州",
+    r"negeri\s+sembilan|negri\s+sembilan|\bn9\b|\bn\.?\s*sembilan\b|"
+    r"\bprn\s*n\.?\s*s|\bprnns\b|\bprnn9\b|\bprn\s*n9\b|state polls|"
+    r"state election|pilihan\s+raya\s+negeri|森美兰|森州",
     re.IGNORECASE,
 )
 
@@ -106,11 +89,8 @@ UA = (
     "Chrome/124.0.0.0 Safari/537.36"
 )
 
-# Relative listing dates clearly older than the window — skip watch-page fetch.
-SKIP_RELATIVE = re.compile(
-    r"\b(\d+\s+years?|1\s+year|a\s+year|\d+\s+months?|a\s+month)\s+ago\b",
-    re.IGNORECASE,
-)
+# Newest-first browse: stop after this many consecutive clearly-old items.
+OLD_STREAK_STOP = 12
 
 
 # ----------------------------------------------------------------------------
@@ -140,18 +120,26 @@ def parse_views(text) -> int:
         return 0
     if isinstance(text, (int, float)):
         return int(text)
-    if isinstance(text, dict):
-        text = text.get("simpleText") or ""
-    digits = re.sub(r"[^\d]", "", str(text))
-    return int(digits) if digits else 0
+    s = str(text).strip().lower().replace(",", "")
+    m = re.search(r"([\d.]+)\s*([kmb])?", s)
+    if not m:
+        digits = re.sub(r"[^\d]", "", s)
+        return int(digits) if digits else 0
+    n = float(m.group(1))
+    suf = m.group(2)
+    if suf == "k":
+        n *= 1_000
+    elif suf == "m":
+        n *= 1_000_000
+    elif suf == "b":
+        n *= 1_000_000_000
+    return int(n)
 
 
 def parse_duration_text(text) -> int:
     """'1:24' / '1:02:03' -> seconds."""
     if not text:
         return 0
-    if isinstance(text, dict):
-        text = text.get("simpleText") or ""
     parts = str(text).strip().split(":")
     if not all(p.isdigit() for p in parts):
         return 0
@@ -160,7 +148,7 @@ def parse_duration_text(text) -> int:
         return parts[0] * 3600 + parts[1] * 60 + parts[2]
     if len(parts) == 2:
         return parts[0] * 60 + parts[1]
-    return parts[0] if parts else 0
+    return parts[0]
 
 
 def parse_publish_date(text: str):
@@ -178,6 +166,41 @@ def parse_publish_date(text: str):
     return None
 
 
+def relative_age_bucket(text: str):
+    """
+    Classify listing relative dates.
+    Returns: 'recent' | 'maybe' | 'old' | 'unknown'
+    """
+    if not text:
+        return "unknown"
+    t = text.lower().strip()
+    t = re.sub(r"^(streamed|premiered)\s+", "", t)
+    if re.search(r"\b(minute|hour|minutes|hours)\b", t):
+        return "recent"
+    m = re.search(r"(\d+)\s+day", t)
+    if m:
+        days = int(m.group(1))
+        # Window is ~21 days deep from 6 Aug 2026; keep slack for bucket fuzz.
+        if days <= 25:
+            return "recent"
+        if days <= 35:
+            return "maybe"
+        return "old"
+    m = re.search(r"(\d+)\s+week", t)
+    if m:
+        weeks = int(m.group(1))
+        if weeks <= 2:
+            return "recent"
+        if weeks == 3:
+            return "maybe"
+        return "old"
+    if re.search(r"\b(a|1)\s+week\b", t):
+        return "recent"
+    if re.search(r"\b(month|year|months|years)\b", t):
+        return "old"
+    return "unknown"
+
+
 def _http_get(url: str) -> str:
     req = urllib.request.Request(
         url, headers={"User-Agent": UA, "Accept-Language": "en-US,en;q=0.9"}
@@ -186,131 +209,281 @@ def _http_get(url: str) -> str:
         return resp.read().decode("utf-8", "replace")
 
 
-def _walk_video_renderers(data):
-    """Yield (videoId, title, description, views, duration_s, relative_date)."""
-    found = []
+def _http_post_json(url: str, body: dict) -> dict:
+    req = urllib.request.Request(
+        url,
+        data=json.dumps(body).encode("utf-8"),
+        headers={
+            "User-Agent": UA,
+            "Content-Type": "application/json",
+            "Accept-Language": "en-US,en;q=0.9",
+        },
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=45) as resp:
+        return json.loads(resp.read().decode("utf-8", "replace"))
 
-    def simple(node):
-        if node is None:
-            return ""
-        if isinstance(node, str):
-            return node
-        if isinstance(node, dict):
-            if "simpleText" in node:
-                return node.get("simpleText") or ""
-            runs = node.get("runs")
-            if isinstance(runs, list):
-                return "".join(r.get("text", "") for r in runs)
-        return ""
+
+def _extract_lockups(obj):
+    """Pull video rows + grid continuation tokens from browse / ytInitialData JSON."""
+    rows = []
+    tokens = []
+    seen_ids = set()
+
+    def duration_from(lv):
+        found = []
+
+        def walk(o):
+            if isinstance(o, dict):
+                if (
+                    o.get("badgeStyle") == "THUMBNAIL_OVERLAY_BADGE_STYLE_DEFAULT"
+                    and o.get("text")
+                    and ":" in str(o.get("text"))
+                ):
+                    found.append(str(o["text"]))
+                for v in o.values():
+                    walk(v)
+            elif isinstance(o, list):
+                for v in o:
+                    walk(v)
+
+        walk(lv.get("contentImage"))
+        return found[0] if found else ""
 
     def walk(o):
         if isinstance(o, dict):
-            vid = o.get("videoId")
-            if vid and ("title" in o or "publishedTimeText" in o):
-                title = simple(o.get("title"))
-                desc = simple(o.get("descriptionSnippet") or o.get("description"))
-                views = parse_views(o.get("viewCountText"))
-                duration = parse_duration_text(o.get("lengthText"))
-                rel = simple(o.get("publishedTimeText"))
-                found.append((vid, title, desc, views, duration, rel))
+            # Only follow explicit list continuations (load-more), not every
+            # continuationCommand embedded in menus / engagement panels.
+            cir = o.get("continuationItemRenderer")
+            if isinstance(cir, dict):
+                tok = (
+                    (cir.get("continuationEndpoint") or {})
+                    .get("continuationCommand", {})
+                    .get("token")
+                )
+                if tok:
+                    tokens.append(tok)
+            # Legacy grid/video renderer (still used on some tabs / clients)
+            if o.get("videoId") and ("title" in o or "publishedTimeText" in o):
+                vid = o["videoId"]
+                if vid not in seen_ids:
+                    title = o.get("title")
+                    if isinstance(title, dict):
+                        title = title.get("simpleText") or "".join(
+                            r.get("text", "") for r in title.get("runs", [])
+                        )
+                    rel = (o.get("publishedTimeText") or {}).get("simpleText") or ""
+                    views = (o.get("viewCountText") or {}).get("simpleText") or ""
+                    length = (o.get("lengthText") or {}).get("simpleText") or ""
+                    rows.append({
+                        "id": vid,
+                        "title": title or "",
+                        "relative_date": rel,
+                        "views": parse_views(views),
+                        "duration": parse_duration_text(length),
+                        "description": "",
+                    })
+                    seen_ids.add(vid)
+            lv = o.get("lockupViewModel")
+            if lv and lv.get("contentId"):
+                vid = lv["contentId"]
+                if vid not in seen_ids:
+                    meta = (lv.get("metadata") or {}).get("lockupMetadataViewModel") or {}
+                    title = (meta.get("title") or {}).get("content") or ""
+                    rel, views = "", ""
+                    cm = ((meta.get("metadata") or {}).get("contentMetadataViewModel") or {})
+                    for row in cm.get("metadataRows") or []:
+                        for part in row.get("metadataParts") or []:
+                            text = (part.get("text") or {}).get("content") or ""
+                            low = text.lower()
+                            if "ago" in low or low.startswith("streamed") or low.startswith("premiered"):
+                                rel = text
+                            elif "view" in low:
+                                views = text
+                    rows.append({
+                        "id": vid,
+                        "title": title,
+                        "relative_date": rel,
+                        "views": parse_views(views),
+                        "duration": parse_duration_text(duration_from(lv)),
+                        "description": "",
+                    })
+                    seen_ids.add(vid)
+            # Shorts shelf uses a different view model (often no relative date).
+            slv = o.get("shortsLockupViewModel")
+            if slv:
+                vid = ((slv.get("onTap") or {}).get("innertubeCommand") or {}).get(
+                    "reelWatchEndpoint", {}
+                ).get("videoId")
+                if vid and vid not in seen_ids:
+                    access = slv.get("accessibilityText") or ""
+                    # "TITLE, 435 views - play Short"
+                    title = access
+                    views = 0
+                    m = re.match(r"^(.*?),\s*([\d.,]+[KMB]?\s+views?)\s*-", access, re.I)
+                    if m:
+                        title = m.group(1).strip()
+                        views = parse_views(m.group(2))
+                    rows.append({
+                        "id": vid,
+                        "title": title,
+                        "relative_date": "",
+                        "views": views,
+                        "duration": 60,  # Shorts tab; exact length from watch if needed
+                        "description": "",
+                    })
+                    seen_ids.add(vid)
             for v in o.values():
                 walk(v)
         elif isinstance(o, list):
             for v in o:
                 walk(v)
 
-    walk(data)
-    return found
+    walk(obj)
+    return rows, tokens
 
 
-def search_channel_html(channel_id: str, keyword: str) -> dict:
-    """Channel search via page HTML. Includes relative dates for coarse skip."""
-    q = urllib.parse.quote(keyword)
-    url = f"https://www.youtube.com/channel/{channel_id}/search?query={q}"
-    out = {}
+def browse_tab(channel_id: str, tab: str, detail_cache: dict | None = None) -> list:
+    """
+    Newest-first Videos or Shorts tab, stopping past the election window.
+    tab: 'videos' | 'shorts'
+
+    Shorts shelves often omit relative dates, so for that tab we stop using
+    exact publish dates from title-relevant watch pages.
+    """
+    if detail_cache is None:
+        detail_cache = {}
+
+    url = f"https://www.youtube.com/channel/{channel_id}/{tab}"
     try:
         html = _http_get(url)
     except Exception as e:
-        print(f"    ! {keyword} (html): {e}")
-        return out
-    m = re.search(r"ytInitialData\s*=\s*(\{.+?\});</script>", html)
-    if not m:
-        m = re.search(r"ytInitialData\s*=\s*(\{.+?\});", html)
-    if not m:
-        return out
-    try:
-        data = json.loads(m.group(1))
-    except json.JSONDecodeError:
-        return out
-    for vid, title, desc, views, duration, rel in _walk_video_renderers(data):
-        out[vid] = {
-            "id": vid,
-            "title": title,
-            "description": desc,
-            "view_count": views,
-            "duration": duration,
-            "relative_date": rel,
-        }
-    return out
+        print(f"    ! {tab}: {e}", flush=True)
+        return []
 
+    api_key_m = re.search(r'"INNERTUBE_API_KEY":"([^"]+)"', html)
+    client_m = re.search(r'"INNERTUBE_CLIENT_VERSION":"([^"]+)"', html)
+    data_m = re.search(r"ytInitialData\s*=\s*(\{.+?\});</script>", html)
+    if not data_m:
+        data_m = re.search(r"ytInitialData\s*=\s*(\{.+?\});", html)
+    if not data_m:
+        print(f"    ! {tab}: no ytInitialData", flush=True)
+        return []
 
-def search_channel_ytdlp(channel_id: str, keyword: str) -> dict:
-    """Channel search via yt-dlp (paginates further than the first HTML page)."""
-    q = urllib.parse.quote(keyword)
-    url = f"https://www.youtube.com/channel/{channel_id}/search?query={q}"
-    opts = {
-        "quiet": True,
-        "no_warnings": True,
-        "extract_flat": "in_playlist",
-        "ignoreerrors": True,
-        "skip_download": True,
-    }
-    out = {}
-    with yt_dlp.YoutubeDL(opts) as ydl:
-        try:
-            info = ydl.extract_info(url, download=False)
-        except Exception as e:
-            print(f"    ! {keyword} (yt-dlp): {e}")
-            return out
-    for e in info.get("entries") or []:
-        if not e or not e.get("id"):
+    data = json.loads(data_m.group(1))
+    api_key = api_key_m.group(1) if api_key_m else "AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8"
+    client_ver = client_m.group(1) if client_m else "2.20260806.01.00"
+
+    collected = []
+    seen = set()
+    rows, tokens = _extract_lockups(data)
+    old_streak = 0
+    page = 1
+    page_cap = 40 if tab == "shorts" else 80
+
+    def shorts_past_window(batch) -> bool:
+        """Fetch dates for title-relevant shorts; stop after an old streak."""
+        nonlocal old_streak
+        for row in batch:
+            if not RELEVANCE.search(row.get("title") or ""):
+                continue
+            vid = row["id"]
+            if vid not in detail_cache:
+                detail_cache[vid] = fetch_watch_meta(vid)
+                time.sleep(0.12)
+            published = detail_cache[vid].get("published")
+            if not published:
+                continue
+            if published < WINDOW_START:
+                old_streak += 1
+                if old_streak >= OLD_STREAK_STOP:
+                    return True
+            else:
+                old_streak = 0
+        return False
+
+    def absorb(batch):
+        nonlocal old_streak
+        stop = False
+        new_rows = []
+        for row in batch:
+            if row["id"] in seen:
+                continue
+            seen.add(row["id"])
+            if tab == "shorts":
+                # No reliable relative dates on shorts shelves — keep all for
+                # title filter; stop decided via exact dates below.
+                collected.append(row)
+                new_rows.append(row)
+                continue
+            bucket = relative_age_bucket(row.get("relative_date") or "")
+            if bucket == "old":
+                old_streak += 1
+                if old_streak >= OLD_STREAK_STOP:
+                    stop = True
+                    break
+                continue
+            old_streak = 0
+            collected.append(row)
+        if tab == "shorts" and shorts_past_window(new_rows):
+            return True
+        return stop
+
+    if absorb(rows):
+        print(
+            f"    {tab:6s}  {len(collected):4d} candidates in-window-ish "
+            f"({page} pages)",
+            flush=True,
+        )
+        return collected
+
+    used_tokens = set()
+    while tokens:
+        token = tokens.pop(0)
+        if token in used_tokens:
             continue
-        out[e["id"]] = {
-            "id": e["id"],
-            "title": e.get("title") or "",
-            "description": e.get("description") or "",
-            "view_count": parse_views(e.get("view_count")),
-            "duration": int(e.get("duration") or 0),
-            "relative_date": "",
+        used_tokens.add(token)
+        page += 1
+        body = {
+            "context": {
+                "client": {
+                    "clientName": "WEB",
+                    "clientVersion": client_ver,
+                    "hl": "en",
+                    "gl": "MY",
+                }
+            },
+            "continuation": token,
         }
-    return out
+        try:
+            resp = _http_post_json(
+                f"https://www.youtube.com/youtubei/v1/browse?key={api_key}",
+                body,
+            )
+        except Exception as e:
+            print(f"    ! {tab} page {page}: {e}", flush=True)
+            break
+        batch, more = _extract_lockups(resp)
+        if absorb(batch):
+            break
+        for t in more:
+            if t not in used_tokens:
+                tokens.append(t)
+        time.sleep(0.15)
+        if page >= page_cap or len(collected) >= 2500:
+            print(f"    ! {tab}: page cap reached ({page} pages)", flush=True)
+            break
 
-
-def search_channel(channel_id: str, keyword: str) -> dict:
-    """Prefer yt-dlp (full pagination); fall back / merge HTML for short queries."""
-    ytdlp = search_channel_ytdlp(channel_id, keyword)
-    html = search_channel_html(channel_id, keyword)
-    # Merge: yt-dlp for coverage, HTML for relative_date when available.
-    out = dict(ytdlp)
-    for vid, entry in html.items():
-        if vid in out:
-            if entry.get("relative_date"):
-                out[vid]["relative_date"] = entry["relative_date"]
-            if not out[vid].get("title"):
-                out[vid]["title"] = entry.get("title") or ""
-            if not out[vid].get("description"):
-                out[vid]["description"] = entry.get("description") or ""
-            if not out[vid].get("view_count"):
-                out[vid]["view_count"] = entry.get("view_count") or 0
-            if not out[vid].get("duration"):
-                out[vid]["duration"] = entry.get("duration") or 0
-        else:
-            out[vid] = entry
-    return out
+    print(
+        f"    {tab:6s}  {len(collected):4d} candidates in-window-ish "
+        f"({page} pages)",
+        flush=True,
+    )
+    return collected
 
 
 def fetch_watch_meta(video_id: str) -> dict:
-    """Exact publish date + likes from the watch page (no API key)."""
+    """Exact publish date + likes + description from the watch page."""
     url = f"https://www.youtube.com/watch?v={video_id}"
     try:
         html = _http_get(url)
@@ -322,6 +495,7 @@ def fetch_watch_meta(video_id: str) -> dict:
     published = None
     likes = 0
     comments = 0
+    description = ""
 
     m = re.search(r"ytInitialData\s*=\s*(\{.+?\});</script>", html)
     if not m:
@@ -329,7 +503,7 @@ def fetch_watch_meta(video_id: str) -> dict:
     if m:
         try:
             data = json.loads(m.group(1))
-            published, likes, comments = _meta_from_initial(data)
+            published, likes, comments, description = _meta_from_initial(data)
         except json.JSONDecodeError:
             pass
 
@@ -340,10 +514,22 @@ def fetch_watch_meta(video_id: str) -> dict:
         if m:
             published = parse_publish_date(m.group(1))
 
+    if not description:
+        m = re.search(
+            r'"shortDescription":"(.*?)"(?:,|})', html
+        )
+        if m:
+            description = (
+                m.group(1)
+                .encode("utf-8")
+                .decode("unicode_escape", errors="ignore")
+            )
+
     return {
         "published": published,
         "likes": likes,
         "comments": comments,
+        "description": description,
         "error": None if published else "no publish date",
     }
 
@@ -352,9 +538,10 @@ def _meta_from_initial(data: dict):
     published = None
     likes = 0
     comments = 0
+    description = ""
 
     def walk(o):
-        nonlocal published, likes, comments
+        nonlocal published, likes, comments, description
         if isinstance(o, dict):
             if published is None:
                 for key in ("publishDate", "dateText"):
@@ -363,6 +550,11 @@ def _meta_from_initial(data: dict):
                         published = parse_publish_date(node["simpleText"])
                         if published:
                             break
+            if not description and "attributedDescriptionBodyText" in o:
+                description = (o["attributedDescriptionBodyText"].get("content") or "")
+            if not description and o.get("description") and isinstance(o["description"], dict):
+                if "simpleText" in o["description"]:
+                    description = o["description"].get("simpleText") or description
             fr = o.get("factoidRenderer")
             if isinstance(fr, dict):
                 label = ((fr.get("label") or {}).get("simpleText") or "").lower()
@@ -376,7 +568,7 @@ def _meta_from_initial(data: dict):
                 walk(v)
 
     walk(data)
-    return published, likes, comments
+    return published, likes, comments, description
 
 
 def main():
@@ -384,49 +576,25 @@ def main():
     detail_cache = {}
 
     for publisher, channel_id in CHANNELS.items():
-        if not channel_id:
-            print(f"\n{publisher}: SKIPPED, no channel ID set")
-            continue
-
-        print(f"\n{publisher}")
+        print(f"\n{publisher}", flush=True)
         found = {}
-        for kw in KEYWORDS:
-            got = search_channel(channel_id, kw)
-            before = len(found)
-            # Prefer entries that already carry relative_date / richer fields.
-            for vid, entry in got.items():
-                if vid not in found:
-                    found[vid] = entry
-                else:
-                    if entry.get("relative_date") and not found[vid].get("relative_date"):
-                        found[vid]["relative_date"] = entry["relative_date"]
-                    for field in ("title", "description", "view_count", "duration"):
-                        if not found[vid].get(field) and entry.get(field):
-                            found[vid][field] = entry[field]
-            print(
-                f"    {kw:20s} {len(got):4d} hits   "
-                f"(+{len(found) - before} new, {len(found)} total)"
-            )
-            time.sleep(0.25)
+        for tab in ("videos", "shorts"):
+            for entry in browse_tab(channel_id, tab, detail_cache):
+                found[entry["id"]] = entry
 
         if not found:
-            print("    nothing found")
+            print("    nothing found", flush=True)
             continue
 
         kept = 0
         checked = 0
-        skipped_old = 0
         for vid, entry in sorted(found.items()):
             title = entry.get("title") or ""
-            desc = entry.get("description") or ""
-            if not RELEVANCE.search(f"{title} {desc}"):
+            # News titles almost always carry the state/PRN marker; skip the
+            # watch-page fetch when the title is clearly unrelated.
+            if not RELEVANCE.search(title):
                 continue
             if EXCLUDE.search(title) and not RELEVANCE.search(title):
-                continue
-
-            rel = entry.get("relative_date") or ""
-            if rel and SKIP_RELATIVE.search(rel):
-                skipped_old += 1
                 continue
 
             if vid not in detail_cache:
@@ -436,8 +604,10 @@ def main():
             checked += 1
             published = meta.get("published")
             if not published:
-                print(f"    ! skip {vid}: {meta.get('error')}")
+                print(f"    ! skip {vid}: {meta.get('error')}", flush=True)
                 continue
+
+            desc = meta.get("description") or entry.get("description") or ""
             if not (WINDOW_START <= published <= WINDOW_END):
                 continue
 
@@ -447,11 +617,11 @@ def main():
                 "title": title,
                 "url": f"https://www.youtube.com/watch?v={vid}",
                 "published_myt": published.strftime("%Y-%m-%d %H:%M"),
-                "views": parse_views(entry.get("view_count")),
+                "views": int(entry.get("views") or 0),
                 "likes": int(meta.get("likes") or 0),
                 "comments": int(meta.get("comments") or 0),
                 "language": classify_language(title, desc),
-                "format": "SHORT" if 0 < secs <= 60 else ("VIDEO" if secs > 60 else "VIDEO"),
+                "format": "SHORT" if 0 < secs <= 60 else "VIDEO",
                 "duration_s": secs,
                 "in_window": True,
             })
@@ -459,7 +629,8 @@ def main():
 
         print(
             f"    kept {kept} (checked {checked} watch pages, "
-            f"skipped {skipped_old} clearly-old, {len(found)} discovered)"
+            f"{len(found)} browse candidates)",
+            flush=True,
         )
 
     with open(OUT_VIDEOS, "w", newline="", encoding="utf-8-sig") as f:
@@ -488,14 +659,20 @@ def main():
         if summary:
             w.writerows(sorted(summary.values(), key=lambda x: -x["views"]))
 
-    print(f"\n{'-' * 62}")
-    print(f"{len(rows)} videos across {len(summary)} publishers")
-    print(f"Written: {OUT_VIDEOS}, {OUT_SUMMARY}")
-    print(f"{'-' * 62}")
-    print(f"{'Publisher':28s} {'Vids':>5s} {'BM':>4s} {'Views':>10s} {'Shorts':>7s}")
+    print(f"\n{'-' * 62}", flush=True)
+    print(f"{len(rows)} videos across {len(summary)} publishers", flush=True)
+    print(f"Written: {OUT_VIDEOS}, {OUT_SUMMARY}", flush=True)
+    print(f"{'-' * 62}", flush=True)
+    print(
+        f"{'Publisher':28s} {'Vids':>5s} {'BM':>4s} {'Views':>10s} {'Shorts':>7s}",
+        flush=True,
+    )
     for s in sorted(summary.values(), key=lambda x: -x["views"]):
-        print(f"{s['publisher']:28s} {s['videos']:5d} {s['bm']:4d} "
-              f"{s['views']:10,d} {s['shorts']:7d}")
+        print(
+            f"{s['publisher']:28s} {s['videos']:5d} {s['bm']:4d} "
+            f"{s['views']:10,d} {s['shorts']:7d}",
+            flush=True,
+        )
 
 
 if __name__ == "__main__":
